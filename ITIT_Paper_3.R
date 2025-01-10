@@ -1,5 +1,27 @@
 ######### Figures for ITIT third paper, using current cleaned data #################
 
+library(tidyverse)
+library(here)
+library(lubridate)
+library(gtsummary)
+library(flextable)
+library(officer)
+library(rnaturalearth) #world map
+library(ggspatial) #annotation_arrow map
+library(tidymodels)
+library(mice)
+library(miceadds)
+library(lme4)
+library(broom.mixed)
+library(janitor)
+library(XML)
+library(sjmisc)
+library(sjPlot)
+library(buildmer)
+library(parallel)
+
+
+
 itit_df <- read_csv("~/Downloads/itit_df.csv") 
 
 itit_df <- itit_df %>%
