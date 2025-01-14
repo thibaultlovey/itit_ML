@@ -247,4 +247,62 @@ ggplot(data = world_data) +
 
 
 
+#####################################################################################
+### Makes treemap of diagnoses, first takign diagnosis column and cleaning it, then counting the number of users with the diagnosis, and the location and plottting it
+
+Followup <- itit_df2[, c(1, 2, 10, 11, 151, 152)]
+
+Followup <- Followup %>%
+  mutate(
+    ##### Create a combined diagnosis column using a range of consecutive column indices (49:59)
+    combined_diag = do.call(paste, c(Followup[, 5:6], sep = ", ")),
+    
+    # Remove the prefix from the combined diagnosis column
+    diagnosis = gsub("NA", "", combined_diag)
+  )
+
+
+Followup_grouped <- Followup %>%
+  mutate(
+    diagnosis = gsub("NA,? ?", "", diagnosis),  # Remove NA values
+    diagnosis = gsub(", $", "", diagnosis),   
+    diagnosis = gsub("^, ?", "", diagnosis)   # Remove trailing commas
+  ) %>%
+  # Remove rows with empty diagnosis
+  filter(diagnosis != "", !is.na(diagnosis), str_trim(diagnosis) != "") %>%
+  # Expand rows with multiple diagnoses separated by commas
+  separate_rows(diagnosis, sep = ",") %>%
+  mutate(diagnosis = trimws(diagnosis)) %>%   # Trim whitespace around diagnosis
+  # Group by diagnosis, trip_id, and country_clean
+  group_by(diagnosis, trip_id, continent_clean)  %>%
+  # Summarize the number of occurrences
+  summarize(n = n(), .groups = "drop")
+
+
+diagnosis_counts <- Followup_grouped %>%
+  count(diagnosis, continent_clean)  # Creates a column `n` with counts of each unique `diagnosis`
+
+
+#Plot the treemap 
+
+library(treemap) 
+treemap(diagnosis_counts,
+        index=c("continent_clean","diagnosis"),
+        vSize="n",
+        type="index"
+) 
+
+
+treemap(
+  diagnosis_counts,
+  index = c("continent_clean", "diagnosis"),  # Group by `group` and `diagnosis` to keep groups together
+  vSize = "n",                      # Size each box based on `n`
+  vColor = "continent_clean",                 # Color boxes by `group`
+  type = "categorical",             # Use categorical coloring for groups
+  fontsize.labels = c(0, 10),       # Set group labels to 0 to hide them; diagnosis labels to 12
+  fontcolor.labels = "white",       # Set label color to white
+  
+)
+
+
 
