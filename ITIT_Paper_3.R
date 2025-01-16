@@ -306,3 +306,60 @@ treemap(
 
 
 
+####Makes stacked par plots looking at continent of travel and reason for travel, both split by male and female, and not
+
+data_summary <- data_ready %>%
+  mutate(travel_purpose = case_when(
+    travel_purpose %in% c("Work", "Education", "Other") ~ "Other",
+    TRUE ~ travel_purpose  # Keep other categories as they are
+  )) %>%
+  group_by(continent_clean, travel_purpose, gender) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  mutate(continent_clean = fct_reorder(continent_clean, count, .fun = sum, .desc = FALSE),
+         travel_purpose = fct_reorder(travel_purpose, count, .fun = sum, .desc = TRUE))
+
+
+
+
+
+# Create the stacked bar plot split by gender
+ggplot(data_summary, aes(x = continent_clean, y = count, fill = travel_purpose)) +
+  geom_bar(stat = "identity") +  # Create a stacked bar plot
+  facet_wrap(~ gender) +         # Facet by gender
+  scale_fill_viridis_d(option = "inferno", direction = -1) +       # Optionally set color scale
+  theme_minimal() +       # Use a minimal theme
+  coord_flip() + #makes it horizontal
+  labs(
+    title = "Reason for Travel by Continent and Gender",
+    x = "Continent",
+    y = "Count of Surveys",
+    fill = "Reason for Travel",
+    caption = "Data source: Your Dataset"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for better readability
+  )
+
+# Create the stacked bar plot overall
+ggplot(data_summary, aes(x = continent_clean, y = count, fill = travel_purpose)) +
+  geom_bar(stat = "identity") +  # Create a stacked bar plot
+  scale_fill_viridis_d(option = "inferno", direction = -1) +       # Use a discrete color scale
+  theme_minimal() +   # Use a minimal theme
+  labs(
+    title = "Reason for Travel by Continent (All Genders)",
+    x = "Continent",
+    y = "Count of Surveys",
+    fill = "Reason for Travel",
+    caption = "Data source: Your Dataset"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for readability
+  )
+
+
