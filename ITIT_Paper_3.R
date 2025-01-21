@@ -146,8 +146,11 @@ itit_df2 %>%
   save_as_docx(path = here("table_1V2.docx"), pr_section = prop_section(page_size = page_size(orient = "landscape", width = 20, height = 18), type = "continuous", page_margins = page_mar()))
 
 
+
 ##########################################################################################
-### Map of symptoms
+### Map of symptoms by country, both absolute number, and percentage 
+
+
 
 ## Yes and No for body other are inverted.. fix 
 itit_df2$body_other <- ifelse(itit_df2$body_other == "Yes", "No", 
@@ -156,6 +159,7 @@ itit_df2$body_other <- ifelse(itit_df2$body_other == "Yes", "No",
 ## only keeps real daily surveys that were filled out 
 itit_df3 <- itit_df2 %>% 
   filter(is.na(gastro_any)==FALSE)
+
 
 itit_df3 <- itit_df2 %>% 
   filter(is.na(gastro_any)==FALSE) %>% 
@@ -188,29 +192,38 @@ itit_df3 <- itit_df2 %>%
   ungroup() -> data_ready
 
 
-### makes map of the wprld coloured by what percentage of travellers had a symptom there
-gastro_by_country <- data_ready %>%
+
+
+### counts symptoms by country, both total and percentage of travellers 
+symptom_by_country <- data_ready %>%
   group_by(country_clean) %>% 
   summarize(
-    gastrointestinal_percentage = mean(gastrointestinal > 0, na.rm = TRUE) * 100
+    gastrointestinal_percentage = mean(gastrointestinal >0, na.rm = TRUE) * 100 ,
+    respiratory_percentage = mean(respiratory > 0, na.rm = TRUE) * 100 ,
+    skin_percentage = mean(dermatologic > 0, na.rm = TRUE) * 100 ,
+    general_percentage = mean(general > 0, na.rm = TRUE) * 100, 
+    gastrointestinal_count = sum(gastrointestinal > 0, na.rm = TRUE),  # Count non-zero gastrointestinal values
+    respiratory_count = sum(respiratory > 0, na.rm = TRUE),            
+    skin_count = sum(dermatologic > 0, na.rm = TRUE),                   
+    general_count = sum(general > 0, na.rm = TRUE)     
   )
 
 
 world <- ne_countries(scale = "medium", returnclass = "sf")
 
 # Ensure matching column names
-gastro_by_country <- gastro_by_country %>% rename(name = country_clean)
+symptom_by_country <- symptom_by_country %>% rename(name = country_clean)
 
 
 ### check if any of the names did not match the world dataset
-unmatched_countries <- gastro_by_country %>%
+unmatched_countries <- symptom_by_country %>%
   filter(!name %in% world$name)
 
 print(unmatched_countries)
 
 
 ## fixes country names 
-gastro_by_country <- gastro_by_country %>%
+symptom_by_country <- symptom_by_country %>%
   mutate(name = case_when(
     name == "Bolivia, Plurinational State of" ~ "Bolivia",
     name == "Dominican Republic" ~ "Dominican Rep.",
@@ -225,24 +238,76 @@ gastro_by_country <- gastro_by_country %>%
   ))
 
 # Merge data with the world map
-world_data <- left_join(world, gastro_by_country, by = "name")
+world_data <- left_join(world, symptom_by_country, by = "name")
 
 
 
-ggplot(data = world_data) +
-  geom_sf(aes(fill = gastrointestinal_percentage), color = "white") +
-  scale_fill_viridis_c(option = "plasma", na.value = "gray90", name = "Percentage (%)") +
+# Reshape the data to long format
+world_data_long <- world_data %>%
+  pivot_longer(
+    cols = c(gastrointestinal_percentage, respiratory_percentage, skin_percentage, general_percentage),
+    names_to = "group",
+    values_to = "percentage"
+  )
+
+
+# Create the map of symptom percentage by country 
+ggplot(data = world_data_long) +
+  geom_sf(aes(fill = percentage), color = "gray50") +
+  scale_fill_viridis_c(option = "rocket", direction = -1, na.value = "gray90", name = "Percentage (%)") +
   theme_minimal() +
   labs(
-    title = "Gastrointestinal Percentage by Country",
-    subtitle = "Percentage of rows with gastrointestinal > 0",
+    title = "Health Issue Percentages by Country",
     caption = "Data source: Your Dataset"
   ) +
   theme(
     panel.grid.major = element_blank(),
     panel.background = element_rect(fill = "aliceblue"),
     legend.position = "bottom"
+  ) +
+  facet_wrap(~ group, ncol = 2, labeller = labeller(
+    type = c(
+      gastrointestinal_percentage = "Gastrointestinal",
+      respiratory_percentage = "Respiratory",
+      skin_percentage = "Skin",
+      general_percentage = "General"
+    )
+  ))
+
+# Reshape the data to long format
+world_data_long2 <- world_data %>%
+  pivot_longer(
+    cols = c(gastrointestinal_count, respiratory_count, skin_count, general_count),
+    names_to = "group",
+    values_to = "count"
   )
+
+
+## nmakes map of absolute number of symptoms per country
+ggplot(data = world_data_long2) +
+  geom_sf(aes(fill = count), color = "gray50") +
+  scale_fill_viridis_c(option = "rocket", direction = -1, na.value = "gray90", name = "Number of positive surveys") +
+  theme_minimal() +
+  coord_sf(xlim = c(-180, 180), ylim = c(-60, 90)) +
+  labs(
+    title = "Symptoms by Country",
+    caption = "Data source: Your Dataset"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.background = element_rect(fill = "aliceblue"),
+    legend.position = "bottom"
+  ) +
+  facet_wrap(~ group, ncol = 2, labeller = labeller(
+    type = c(
+      gastrointestinal_percentage = "Gastrointestinal",
+      respiratory_percentage = "Respiratory",
+      skin_percentage = "Skin",
+      general_percentage = "General"
+    )
+  ))
+
+
 
 
 
@@ -305,7 +370,7 @@ treemap(
 )
 
 
-
+##########################################################################################
 ####Makes stacked par plots looking at continent of travel and reason for travel, both split by male and female, and not
 
 data_summary <- data_ready %>%
