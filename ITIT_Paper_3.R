@@ -22,13 +22,25 @@ library(parallel)
 
 # comment
 
-itit_df <- read_csv("~/Downloads/itit_df_clean.csv") 
+itit_df <- read_csv("~/Downloads/itit_df_clean 2.csv") 
+
+itit_df <- read_csv(here("itit_df_clean 2.csv"), col_types = cols(
+  .default = col_guess(), 
+  `follow-up_1_diagnosis` = col_character(),
+  `follow-up_2_diagnosis` = col_character(),      
+  `follow-up_1_diagnosis_date` = col_character(),
+  `follow-up_2_diagnosis_date` = col_character(),
+  `snow_1h` = col_character()
+))
+
+
 
 itit_df <- itit_df %>%
   rename(survey_date = finished)
 
 itit_df$travel_date <- as.Date(itit_df$travel_date, format = "%d.%m.%y")  
-survey_date <- as.Date(survey_date) 
+itit_df$survey_date <- as.Date(itit_df$survey_date) 
+itit_df$baseline_date <- as.Date(itit_df$baseline_date) 
 
 itit_df2 <- itit_df %>%
   mutate(across(where(is.character), as.factor)) %>%  # Convert character columns to factors
@@ -146,6 +158,121 @@ itit_df2 %>%
   save_as_docx(path = here("table_1V2.docx"), pr_section = prop_section(page_size = page_size(orient = "landscape", width = 20, height = 18), type = "continuous", page_margins = page_mar()))
 
 
+
+
+#######################################################################################
+####Makes stacked par plots looking at continent of travel and reason for travel, both split by male and female, and not
+
+data_summary <- data_ready %>%
+  mutate(travel_purpose = case_when(
+    travel_purpose %in% c("Work", "Education", "Other") ~ "Other",
+    TRUE ~ travel_purpose  # Keep other categories as they are
+  )) %>%
+  group_by(continent_clean, travel_purpose, gender) %>%
+  summarize(count = n(), .groups = "drop") %>%
+  mutate(continent_clean = fct_reorder(continent_clean, count, .fun = sum, .desc = FALSE),
+         travel_purpose = fct_reorder(travel_purpose, count, .fun = sum, .desc = TRUE))
+
+
+
+
+
+# Create the stacked bar plot split by gender
+ggplot(data_summary, aes(x = continent_clean, y = count, fill = travel_purpose)) +
+  geom_bar(stat = "identity") +  # Create a stacked bar plot
+  facet_wrap(~ gender) +         # Facet by gender
+  scale_fill_viridis_d(option = "inferno", direction = -1) +       # Optionally set color scale
+  theme_minimal() +       # Use a minimal theme
+  coord_flip() + #makes it horizontal
+  labs(
+    title = "Reason for Travel by Continent and Gender",
+    x = "Continent",
+    y = "Count of Surveys",
+    fill = "Reason for Travel",
+    caption = "Data source: Your Dataset"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for better readability
+  )
+
+
+# Create the stacked bar plot overall
+
+ggplot(data_summary, aes(x = continent_clean, y = count, fill = travel_purpose)) +
+  geom_bar(stat = "identity") +  # Create a stacked bar plot
+  scale_fill_viridis_d(option = "inferno", direction = -1) +       # Use a discrete color scale
+  theme_minimal() +
+  coord_flip() + 
+  labs(
+    title = "Reason for Travel by Continent (All Genders)",
+    x = "Continent",
+    y = "Count of Surveys",
+    fill = "Reason for Travel",
+    caption = "Data source: Your Dataset"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for readability
+  )
+
+
+#### Calculate percentages for puttign on the plot
+data_summary2 <- data_summary %>%
+  group_by(continent_clean, travel_purpose) %>%
+  summarize(count = sum(count), .groups = "drop") %>%  # Sum counts for all genders
+  group_by(continent_clean) %>%
+  mutate(
+    percent_within_continent = count / sum(count) * 100  # Percentage of travel_purpose within the continent
+  ) %>%
+  ungroup() %>%
+  mutate(
+    percent_overall_continent = ave(count, continent_clean, FUN = sum) / sum(count) * 100  # Overall percentage by continent
+  )
+
+# Create the plot
+ggplot(data_summary2, aes(x = continent_clean, y = count, fill = travel_purpose)) +
+  geom_bar(stat = "identity") +  # Create a stacked bar plot
+  # Add text for within-continent percentages
+  geom_text(
+    aes(
+      label = paste0(sprintf("%.1f", percent_within_continent), "%"),
+      y = count / 2  # Place in the center of the bar segments
+    ),
+    position = position_stack(vjust = 0.5),  # Stack positioning for the bar segments
+    size = 3,  # Adjust text size
+    color = "white"
+  ) +
+  # Add text for overall percentages by continent
+  geom_text(
+    aes(
+      label = paste0("Total: ", sprintf("%.1f", percent_overall_continent), "%"),
+      y = sum(count)  # Place at the end of the stacked bars
+    ),
+    size = 4,  # Slightly larger size for overall percentages
+    color = "black",
+    hjust = -0.2  # Adjust horizontal alignment to appear outside the bars
+  ) +
+  scale_fill_viridis_d(option = "inferno", direction = -1) +  # Use a discrete color scale
+  theme_minimal() +
+  coord_flip() + 
+  labs(
+    title = "Reason for Travel by Continent (All Genders)",
+    x = "Continent",
+    y = "Count of Surveys",
+    fill = "Reason for Travel",
+    caption = "Data source: Your Dataset"
+  ) +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)  # Rotate x-axis labels for readability
+  )
 
 ##########################################################################################
 ### Map of symptoms by country, both absolute number, and percentage 
@@ -312,6 +439,7 @@ ggplot(data = world_data_long2) +
 
 
 
+
 #####################################################################################
 ### Makes treemap of diagnoses, first takign diagnosis column and cleaning it, then counting the number of users with the diagnosis, and the location and plottting it
 
@@ -325,6 +453,12 @@ Followup <- Followup %>%
     # Remove the prefix from the combined diagnosis column
     diagnosis = gsub("NA", "", combined_diag)
   )
+
+Followup2 <- Followup  %>% filter(diagnosis != ", ", !is.na(diagnosis), str_trim(diagnosis) != "")  %>%
+  group_by(diagnosis, trip_id) %>%
+  # Summarize the number of occurrences
+  summarize(n = n(), .groups = "drop")
+
 
 
 Followup_grouped <- Followup %>%
@@ -348,6 +482,63 @@ diagnosis_counts <- Followup_grouped %>%
   count(diagnosis, continent_clean)  # Creates a column `n` with counts of each unique `diagnosis`
 
 
+
+library(sunburstR)
+
+
+hierarchical_data <- diagnosis_counts %>%
+  mutate(path = paste(continent_clean, diagnosis, sep = "-")) %>%  # Combine levels into a hierarchy
+  select(path, n)  # Keep only the hierarchical path and the values
+
+# Create the sunburst plot
+sunburst(hierarchical_data, count = TRUE )
+
+
+
+#############Creates a circular bar plot divided by continents 
+
+
+# Set a number of 'empty bars' to add at the end of each group
+empty_bar <- 0  # Adjust as needed
+to_add <- data.frame(
+  diagnosis = rep(NA, empty_bar * length(unique(diagnosis_counts$continent_clean))),
+  continent_clean = rep(unique(diagnosis_counts$continent_clean), each = empty_bar),
+  n = NA
+)
+
+# Append empty rows and arrange by continent
+data <- rbind(diagnosis_counts, to_add) %>% arrange(continent_clean)
+
+# Create an ID column
+data$id <- seq(1, nrow(data))
+
+# Get label positions and angles
+label_data <- data
+number_of_bar <- nrow(label_data)
+angle <- 90 - 360 * (label_data$id - 0.5) / number_of_bar
+label_data$hjust <- ifelse(angle < -90, 1, 0)
+label_data$angle <- ifelse(angle < -90, angle + 180, angle)
+
+# Make the plot
+p <- ggplot(data, aes(x = as.factor(id), y = n, fill = continent_clean)) +
+  geom_bar(stat = "identity", alpha = 0.7) +
+  ylim(-max(data$n, na.rm = TRUE) * 1.2, max(data$n, na.rm = TRUE) * 1.2) +  # Dynamic y-axis
+  theme_minimal() +
+  theme(
+    legend.position = "right",
+    axis.text = element_blank(),
+    axis.title = element_blank(),
+    panel.grid = element_blank(),
+    plot.margin = unit(rep(-1, 4), "cm")
+  ) +
+  coord_polar() +
+  geom_text(data = label_data, aes(x = id, y = n + 0.5, label = diagnosis, hjust = hjust),
+            color = "black", fontface = "bold", alpha = 0.7, size = 3, angle = label_data$angle, inherit.aes = FALSE)
+
+# Display the plot
+p
+
+###################################################################
 #Plot the treemap 
 
 library(treemap) 
@@ -360,14 +551,31 @@ treemap(diagnosis_counts,
 
 treemap(
   diagnosis_counts,
-  index = c("continent_clean", "diagnosis"),  # Group by `group` and `diagnosis` to keep groups together
-  vSize = "n",                      # Size each box based on `n`
-  vColor = "continent_clean",                 # Color boxes by `group`
-  type = "categorical",             # Use categorical coloring for groups
-  fontsize.labels = c(0, 10),       # Set group labels to 0 to hide them; diagnosis labels to 12
-  fontcolor.labels = "white",       # Set label color to white
-  
+  index = c("continent_clean", "diagnosis"),  # Group by continent and diagnosis
+  vSize = "n",                                # Size each box based on `n`
+  vColor = "continent_clean",                 # Color boxes by continent
+  type = "categorical",                       # Use categorical coloring
+  fontsize.labels = c(0, 10),                 # Set group labels to 0 to hide them; diagnosis labels to 10
+  fontcolor.labels = "white"                # Set label color to white
+  # Ensure labels are drawn
 )
+
+
+
+
+ggplot(diagnosis_counts, aes(area = n, fill = continent_clean,
+                             label = paste(diagnosis, n, sep = "\n"))) +
+  geom_treemap(aes(group = continent_clean)) +  # Group diagnoses by continent
+  geom_treemap_text(colour = "white", place = "centre", size = 15) +
+  theme_minimal() +  # Cleaner theme
+  theme(
+    legend.position = "right",  # Adjust legend position
+    legend.title = element_text(size = 12),  # Customize legend title size
+    legend.text = element_text(size = 10)    # Customize legend text size
+  ) +
+  labs(
+    fill = "Continent"  # Customize the legend title
+  )
 
 
 ##########################################################################################
@@ -428,3 +636,208 @@ ggplot(data_summary, aes(x = continent_clean, y = count, fill = travel_purpose))
   )
 
 
+#################################################################
+### CART trees etc.
+library(rpart)
+library(rpart.plot)
+library(caret)
+
+
+itit_df2  %>% 
+  filter(is.na(survey_day)==FALSE) %>% 
+  select(trip_id,survey_day,continent_clean,gender,travel_duration, travel_purpose, age, health_chronic, smoking_status, trip_number,
+         nausea:constipation,
+         cough:out_of_breath_running,
+         rash:itchy_red_eyes,
+         fever:body_other,
+         pain_joint:location_swelling) %>%
+  mutate(across(c(nausea:location_swelling), ~case_when(. %in% c("None","none", "No") ~ 0,
+                                                        is.na(.) == TRUE ~ NA,
+                                                        TRUE ~ 1))) %>% 
+  rowwise() %>% 
+  mutate(gastrointestinal=as.numeric(if_any(nausea:constipation, ~.x != 0)),
+         respiratory=as.numeric(if_any(cough:out_of_breath_running, ~.x != 0)),
+         dermatologic=as.numeric(if_any(rash:itchy_red_eyes, ~.x != 0)),
+         general=as.numeric(if_any(fever:location_swelling, ~.x != 0)),
+         overall=as.numeric(if_any(c(nausea:constipation,cough:out_of_breath_running,rash:itchy_red_eyes,fever:location_swelling), ~.x != 0))) %>% 
+  ungroup() %>% 
+  relocate(gastrointestinal,.before=nausea) %>% 
+  relocate(respiratory,.before=cough) %>% 
+  relocate(dermatologic,.before=rash) %>% 
+  relocate(general,.before=fever) %>% 
+  relocate(overall,.before=gastrointestinal) %>% 
+  drop_na() %>% 
+  group_by(trip_id) %>% 
+  mutate(survey_day=row_number()) %>% 
+  mutate(across(c(overall:location_swelling), ~sum(., na.rm = TRUE))) %>% 
+  slice_max(survey_day) %>% 
+  ungroup() -> data_ready
+
+
+
+
+str(data_ready)
+
+
+data_ready <- na.omit(data_ready)
+
+data_ready <- data_ready %>%
+  mutate(symptom_yn = factor(
+    ifelse(overall >= 1, "Yes", "No"),  # Assign "Yes" or "No"
+    levels = c("No", "Yes")  # Explicitly set the levels
+  ))
+
+
+cart_model <- rpart(
+  symptom_yn ~  gender + continent_clean + travel_purpose + travel_duration + age + health_chronic + smoking_status + trip_number,
+  data = data_ready,
+  method = "class"  
+)
+
+# Visualize the tree
+rpart.plot(cart_model)
+
+
+
+# Predict on new data
+predicted <- predict(cart_model, newdata = data_ready, type = "class")
+
+# Add predictions back to the dataset
+data_ready$predicted_symptom_category <- predicted
+
+confusionMatrix(
+  data = predicted,
+  reference = data_ready$symptom_yn
+)
+
+
+
+
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Set a grid of hyperparameters to search
+tune_grid <- expand.grid(cp = seq(0.001, 0.1, by = 0.01))
+
+# Train the CART model with hyperparameter tuning
+tuned_cart <- train(
+  symptom_yn ~  gender + continent_clean + travel_purpose + travel_duration + age + health_chronic + smoking_status + trip_number,
+  data = data_ready,
+  method = "rpart",
+  trControl = train_control,
+  tuneGrid = tune_grid
+)
+
+# Best model
+print(tuned_cart$bestTune)
+
+# Visualize the best tree
+library(rpart.plot)
+rpart.plot(tuned_cart$finalModel)
+
+
+
+
+train_control <- trainControl(method = "cv", number = 10)
+
+# Train the model with CV
+cart_cv <- train(
+  symptom_yn ~  gender + continent_clean + travel_purpose + travel_duration + age + health_chronic + smoking_status + trip_number,
+  data = data_ready,
+  method = "rpart",
+  trControl = train_control
+)
+
+print(cart_cv)
+
+
+
+rpart.plot(tuned_cart$finalModel, type = 3, extra = 102, fallen.leaves = TRUE)
+
+
+# Variable importance
+varImp(tuned_cart)
+
+## travel_duration, age, and continet_Europe, then Asia  contributed the most
+
+
+
+
+
+
+#### ROC curve
+library(pROC)
+
+# Get predicted probabilities for the positive class (e.g., "Yes")
+pred_probs <- predict(tuned_cart, newdata = data_ready, type = "prob")[, 2]
+
+# Create the ROC curve
+roc_curve <- roc(data_ready$symptom_yn, pred_probs)
+
+# Plot the ROC curve
+plot(roc_curve, col = "blue", main = "ROC Curve for CART Model")
+abline(a = 0, b = 1, lty = 2, col = "red")  # Add diagonal reference line
+
+# Calculate the AUC
+auc_value <- auc(roc_curve)
+print(auc_value)
+
+
+
+
+
+
+
+##bootstrapping
+# Define bootstrapping control
+train_control_boot <- trainControl(
+  method = "boot",  # Bootstrapping
+  number = 100,     # Number of bootstrap samples
+  classProbs = TRUE,  # Needed for AUC
+  summaryFunction = twoClassSummary  # Evaluate using AUC
+)
+
+# Train the CART model with bootstrapping
+cart_boot <- train(
+  symptom_yn ~  gender + continent_clean + travel_purpose + travel_duration + age + health_chronic + smoking_status + trip_number,
+  data = data_ready,
+  method = "rpart",
+  trControl = train_control_boot,
+  metric = "ROC"  # Optimize for AUC
+)
+
+# View results
+print(cart_boot)
+
+
+# Extract ROC values from bootstrapping
+auc_values <- cart_boot$resample$ROC
+
+# Summarize AUC
+mean_auc <- mean(auc_values)
+ci_auc <- quantile(auc_values, c(0.025, 0.975))  # 95% confidence interval
+
+cat("Mean AUC:", mean_auc, "\n")
+
+#Mean AUC: 0.6462628 
+
+cat("95% CI for AUC:", ci_auc, "\n")
+
+##95% CI for AUC: 0.5788188 0.7023128 
+
+
+
+### Random forest
+rf_model <- train(
+  symptom_yn ~  gender + continent_clean + travel_purpose + travel_duration + age + health_chronic + smoking_status + trip_number,
+  data = data_ready,
+  method = "rf",
+  trControl = train_control_boot,
+  metric = "ROC"
+)
+
+
+print(rf_model)
+
+## compares CART and random forest 
+cat("CART AUC:", mean(cart_boot$resample$ROC), "\n")
+cat("Random Forest AUC:", mean(rf_model$resample$ROC), "\n")
