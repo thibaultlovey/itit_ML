@@ -21,10 +21,7 @@ library(buildmer)
 library(parallel)
 
 # comment
-
-itit_df <- read_csv("~/Downloads/itit_df_clean 2.csv") 
-
-itit_df <- read_csv(here("itit_df_clean 2.csv"), col_types = cols(
+itit_df <- read_csv("~/Downloads/itit_df_clean.csv", col_types = cols(
   .default = col_guess(), 
   `follow-up_1_diagnosis` = col_character(),
   `follow-up_2_diagnosis` = col_character(),      
@@ -33,21 +30,22 @@ itit_df <- read_csv(here("itit_df_clean 2.csv"), col_types = cols(
   `snow_1h` = col_character()
 ))
 
-
-
-itit_df <- itit_df %>%
-  rename(survey_date = finished)
-
-itit_df$travel_date <- as.Date(itit_df$travel_date, format = "%d.%m.%y")  
-itit_df$survey_date <- as.Date(itit_df$survey_date) 
-itit_df$baseline_date <- as.Date(itit_df$baseline_date) 
-
 itit_df2 <- itit_df %>%
+  rename(survey_date = finished) %>%
+  mutate(
+    travel_date = as.Date(travel_date, format = "%d.%m.%y"),
+    survey_date = as.Date(survey_date),
+    baseline_date = as.Date(baseline_date)
+  ) %>%
   mutate(across(where(is.character), as.factor)) %>%  # Convert character columns to factors
-  filter(baseline_date >= "2022-04-01") %>%     
-  filter(travel_date <= survey_date) %>%              # Ensure travel_date is before survey_date
-  filter(age > 17) %>%                               # Filter out minors (age <= 17)
-  filter(travel_duration > 1)                        # Filter out trips of 1 day or less
+  filter(
+    baseline_date >= "2022-04-01",
+    travel_date <= survey_date,  # Ensure travel_date is before survey_date
+    age > 17,  # Filter out minors (age <= 17)
+    travel_duration > 1,
+    travel_purpose != "Refugee/Ukraine"  # Remove only "Refugee/Ukraine"
+  ) %>%
+  mutate(travel_purpose = fct_drop(travel_purpose))  # Drop the unused factor level
 
 # flextable defaults
 set_flextable_defaults(
@@ -95,10 +93,6 @@ itit_df2 <- itit_df2 %>%
 # ITIT_ukr <- ITIT_ukr %>% 
 #   filter(is.na(gastro_any)==FALSE)
 
-
-##Remove Ukrainians 
-itit_df2 <- itit_df2 %>% 
-  filter(travel_purpose != "Refugee/Ukraine")
 
 
 itit_df2 %>%
@@ -847,73 +841,91 @@ cat("CART AUC:", mean(cart_boot$resample$ROC), "\n")
 
 
 ###############################################################################
-##### Modelling based on Thibaukt's code
+##### Modelling based on Thibault's code
 
 library(tidymodels)
 library(themis)
 library(ordinal)
 library(patchwork)
 library(tidyposterior)
+library(finetune)
+library(future)
+library(discrim)
 
 itit_df2  %>% 
-  filter(is.na(survey_day)==FALSE) %>% 
-  select(trip_id,survey_day,continent_clean,gender,travel_duration, travel_purpose, age, health_chronic, smoking_status, trip_number,
+  drop_na(gastro_any,continent_clean,gender,smoking_status) %>% 
+  select(trip_id,continent_clean,gender,travel_duration, travel_purpose, age, health_chronic, smoking_status, trip_number,
          nausea:constipation,
          cough:out_of_breath_running,
          rash:itchy_red_eyes,
          fever:body_other,
-         pain_joint:location_swelling) %>%
+         pain_joint:location_swelling) %>% 
   mutate(across(c(nausea:location_swelling), ~case_when(. %in% c("None","none", "No") ~ 0,
                                                         is.na(.) == TRUE ~ NA,
                                                         TRUE ~ 1))) %>% 
   rowwise() %>% 
-  mutate(gastrointestinal=as.numeric(if_any(nausea:constipation, ~.x != 0)),
-         respiratory=as.numeric(if_any(cough:out_of_breath_running, ~.x != 0)),
-         dermatologic=as.numeric(if_any(rash:itchy_red_eyes, ~.x != 0)),
-         general=as.numeric(if_any(fever:location_swelling, ~.x != 0)),
-         overall=as.numeric(if_any(c(nausea:constipation,cough:out_of_breath_running,rash:itchy_red_eyes,fever:location_swelling), ~.x != 0))) %>% 
-  ungroup() %>% 
-  drop_na() %>% 
+  mutate(overall=as.numeric(if_any(c(nausea:location_swelling), ~.x != 0))) %>% 
+  select(-c(nausea:location_swelling)) %>% 
   group_by(trip_id) %>% 
-  mutate(survey_day=row_number()) %>% 
-  mutate(across(c(overall:location_swelling), ~sum(., na.rm = TRUE))) %>% 
-  slice_max(survey_day) %>% 
-  ungroup()  -> data_rf 
-
-data_rf2 <- data_rf %>%
-  select(survey_day, continent_clean, gender, travel_duration, travel_purpose, age, health_chronic, smoking_status, trip_number, overall) %>%
-  mutate(across(c(overall), ~ case_when(
-    . >= 1 ~ 1,   # If 1 or greater, set to 1
-    . == 0 ~ 0,   # If exactly 0, keep it as 0
-    TRUE ~ NA_real_  # Keep NA as NA
-  ))) %>%
-  mutate(overall = factor(overall))
-
+  slice_max(overall) %>% 
+  slice_head(n=1)%>% 
+  ungroup() %>% 
+  mutate(overall = fct_recode(as.factor(overall), "No" = "0", "Yes" = "1")) %>% 
+  # 🛠 **1️⃣ Recategorize Smoking Status into WHO categories**
+  mutate(
+      smoking_status = case_when(
+        smoking_status %in% c("Daily", "Weekly", "Monthly") ~ "Occasional Smoker",
+        smoking_status == "Former smoker" ~ "Former Smoker",
+        smoking_status == "Not smoking" ~ "Non-Smoker",
+        TRUE ~ as.character(smoking_status) # Keep existing categories if any other
+      ) %>% as.factor()
+    ) %>% 
+  # 🛠 **2️⃣ Group Travel Purpose Using 5% Threshold**
+    mutate(
+      travel_purpose = fct_lump_prop(travel_purpose, prop = 0.05)  # Keeps levels >5%, others → "Other"
+    ) %>% 
+  # 🛠 **3️⃣ Group Medical Conditions (None, One, Multiple)**
+mutate(
+  health_chronic = case_when(
+    as.character(health_chronic) == "None" ~ "None",
+    as.character(health_chronic) %in% c("Diabetes", "Heart diseases", "High blood pressure", "Immunosuppression") ~ "One",
+    as.character(health_chronic) == "Multiple" ~ "Multiple",
+    TRUE ~ as.character(health_chronic)  # Keep existing values
+  ) %>% as.factor())%>% select(-trip_id)->data_ml 
 
 #Split data
 set.seed(1234)
-travel_split<-initial_split(data_rf2,strata=overall)
+travel_split<-initial_split(data_ml,strata=overall)
 train_data<-training(travel_split)
 test_data<-testing(travel_split)
 
 table(train_data$overall)
 table(test_data$overall)
+
 #Define models parsnip_addin()
-
-
-boost_tree_xgboost_spec <-
-  boost_tree(tree_depth = tune(), trees = tune(), learn_rate = tune(), min_n = tune(), loss_reduction = tune(), sample_size = tune(), stop_iter = tune()) %>%
-  set_engine('xgboost') %>%
-  set_mode('classification')
 
 decision_tree_rpart_spec <-
   decision_tree(tree_depth = tune(), min_n = tune(), cost_complexity = tune()) %>%
   set_engine('rpart') %>%
   set_mode('classification')
 
-logistic_reg_glmnet_spec <-multinom_reg(penalty = tune(),mixture = tune()) %>%
-  set_engine("glmnet") %>%
-  set_mode("classification")
+boost_tree_xgboost_spec <-
+  boost_tree(tree_depth = tune(), trees = tune(), learn_rate = tune(), min_n = tune(), loss_reduction = tune(), sample_size = tune(), stop_iter = tune()) %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+logistic_reg_glmnet_spec <-
+  logistic_reg(penalty = tune(), mixture = tune()) %>%
+  set_engine('glmnet')
+
+logistic_reg_glm_spec <-
+  logistic_reg() %>%
+  set_engine('glm')
+
+mlp_nnet_spec <-
+  mlp(hidden_units = tune(), penalty = tune(), epochs = tune()) %>%
+  set_engine('nnet') %>%
+  set_mode('classification')
 
 nearest_neighbor_kknn_spec <-
   nearest_neighbor(neighbors = tune(), weight_func = tune(), dist_power = tune()) %>%
@@ -925,84 +937,125 @@ rand_forest_ranger_spec <-
   set_engine('ranger') %>%
   set_mode('classification')
 
-# 
-# 
-# logistic_model <- multinom_reg(penalty = tune(),mixture = tune()) %>%
-#   set_engine("glmnet") %>%
-#   set_mode("classification")
-# 
-# knn_model <- nearest_neighbor(neighbors = tune()) %>% 
-#   set_engine("kknn") %>% 
-#   set_mode("classification")
-# 
-# xgboost_model <- boost_tree(trees = tune(), learn_rate = tune()) %>% 
-#   set_engine("xgboost") %>% 
-#   set_mode("classification")
-# 
-# rf_model <- rand_forest(trees = tune()) %>%
-#   set_mode("classification") %>%
-#   set_engine("ranger")
+svm_linear_kernlab_spec <-
+  svm_linear(cost = tune(), margin = tune()) %>%
+  set_engine('kernlab') %>%
+  set_mode('classification')
 
-# Recipes
-# recipe_1<- train_data %>%
-#   recipe(impact ~ .) %>%
-#   step_zv(all_predictors()) %>%
+svm_rbf_kernlab_spec <-
+  svm_rbf(cost = tune(), rbf_sigma = tune(), margin = tune()) %>%
+  set_engine('kernlab') %>%
+  set_mode('classification')
+
+naive_Bayes_naivebayes_spec <-
+  naive_Bayes(smoothness = tune(), Laplace = tune()) %>%
+  set_engine('naivebayes')
+
+# # Recipe 1: SMOTE for Synthetic Oversampling
+# recipe_1 <- train_data %>%
+#   recipe(overall ~ .) %>%
+#   step_zv(all_predictors()) %>%  
 #   step_normalize(where(is.numeric)) %>%
-#   step_corr(where(is.numeric)) %>%
-#   step_smotenc(impact,over_ratio=0.5) %>% 
-#   step_dummy(all_nominal_predictors())
-
-recipe_2<-train_data %>%
+#   step_corr(where(is.numeric), threshold = 0.9) %>%
+#   step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%  # Convert categorical variables to numeric before SMOTE
+#   step_smote(overall, over_ratio = tune())  # Apply SMOTE to the numeric-encoded data
+# 
+# Recipe 2: Baseline Preprocessing (No Class Imbalance Correction)
+recipe_2 <- train_data %>%
   recipe(overall ~ .) %>%
   step_zv(all_predictors()) %>%
   step_normalize(where(is.numeric)) %>%
-  step_corr(where(is.numeric)) %>%
-  step_dummy(all_nominal_predictors())
-
-recipe_2 <- recipe(overall ~ ., data = train_data) %>%
-  step_zv(all_predictors()) %>%
-  step_normalize(where(is.numeric)) %>%
-  step_corr(where(is.numeric)) %>%
-  step_dummy(all_nominal_predictors())
-
-
-
-# recipe_3<-train_data %>%
-#   recipe(impact ~ .) %>%
+  step_corr(where(is.numeric), threshold = 0.9) %>%
+  step_novel(all_nominal_predictors()) %>%  # Handle unseen categorical levels
+  step_dummy(all_nominal_predictors(), one_hot = TRUE)
+# 
+# # Recipe 3: Hybrid Upsampling & Downsampling for Class Imbalance
+# recipe_3 <- train_data %>%
+#   recipe(overall ~ .) %>%
 #   step_zv(all_predictors()) %>%
 #   step_normalize(where(is.numeric)) %>%
-#   step_corr(where(is.numeric)) %>%
-#   step_downsample(impact) %>% 
-#   step_dummy(all_nominal_predictors())
+#   step_corr(where(is.numeric), threshold = 0.9) %>%
+#   step_upsample(overall, over_ratio = 1) %>%  # Bring minority class to same level as majority
+#   step_downsample(overall) %>%  # Reduce majority class size
+#   step_novel(all_nominal_predictors()) %>%  # Handle unseen categorical levels
+#   step_dummy(all_nominal_predictors(), one_hot = TRUE)
+
+# 📌 Recipe 1: For SVM (Keep SMOTE & Normalization)
+recipe_svm <- train_data %>%
+  recipe(overall ~ .) %>%
+  step_zv(all_predictors()) %>%  
+  step_normalize(where(is.numeric)) %>%  # SVM needs normalized features
+  step_corr(where(is.numeric), threshold = 0.9) %>%  
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%  
+  step_smote(overall, over_ratio = tune())  # Only for SVM, helps balance data
+
+# 📌 Recipe 2: For RF & XGBoost (Remove Normalization, Use Upsampling)
+recipe_rf_xgb <- train_data %>%
+  recipe(overall ~ .) %>%
+  step_zv(all_predictors()) %>%
+  step_corr(where(is.numeric), threshold = 0.9) %>%  # Keep if needed
+  step_dummy(all_nominal_predictors(), one_hot = TRUE) %>%
+  step_upsample(overall, over_ratio = 1) %>%  # Balanced sampling for robustness
+  step_downsample(overall)  # Prevent overfitting by reducing majority class
 
 #Generate List of Recipes
-recipe_list <- 
-  list(Recipe2 = recipe_2)
+# recipe_list <- 
+#   list(Recipe1 = recipe_1,
+#        Recipe2 = recipe_2,
+#        Recipe3 = recipe_3)
+
 #Generate List of Model Types
-model_list <- 
-  list(Random_Forest = rand_forest_ranger_spec
-       , Logistic_Regression = logistic_reg_glmnet_spec,
-       XGboost=boost_tree_xgboost_spec,Decision_tree=decision_tree_rpart_spec,
-       KKNN= nearest_neighbor_kknn_spec)
+# model_list <- list(
+#   "Random Forest (ranger)" = rand_forest_ranger_spec,
+#   "Logistic Regression (GLMnet)" = logistic_reg_glmnet_spec,
+#   "XGBoost (Boosted Trees)" = boost_tree_xgboost_spec,
+#   "Decision Tree (rpart)" = decision_tree_rpart_spec,
+#   "K-Nearest Neighbors (kknn)" = nearest_neighbor_kknn_spec,
+#   "Logistic Regression (GLM)" = logistic_reg_glm_spec,
+#   "Multi-Layer Perceptron (nnet)" = mlp_nnet_spec,
+#   "Support Vector Machine - Linear (kernlab)" = svm_linear_kernlab_spec,
+#   "Support Vector Machine - RBF (kernlab)" = svm_rbf_kernlab_spec,
+#   "Naive Bayes (naivebayes)" = naive_Bayes_naivebayes_spec
+# )
 
-model_set <- workflow_set(preproc = recipe_list, models = model_list, cross = T)
+model_list_top <- list(
+  "XGBoost (Boosted Trees)" = boost_tree_xgboost_spec,
+  "Random Forest (ranger)" = rand_forest_ranger_spec,
+  "Support Vector Machine - RBF (kernlab)" = svm_rbf_kernlab_spec
+)
 
-train_resamples <- bootstraps(train_data,strata=overall)
-doParallel::registerDoParallel(cores = 7)
-library(finetune)
-all_workflows <- 
-  model_set %>% workflow_map(resamples = train_resamples, 
-                             verbose = TRUE,
-                             "tune_grid")
+recipe_list_top <- list(
+  "SVM Recipe" = recipe_svm,
+  "RF/XGBoost Recipe" = recipe_rf_xgb,
+  "Baseline Preprocessing"=recipe_2
+)
+
+top_workflows <- workflow_set(preproc = recipe_list_top, models = model_list_top, cross = TRUE)
+# model_set <- workflow_set(preproc = recipe_list, models = model_list, cross = T)
+
+# Set up 10-fold cross-validation (Better than bootstrap for generalization)
+train_resamples <- vfold_cv(train_data, v = 10, strata = overall)
+
+# Enable multicore processing for Apple M1/M2 (auto-detects cores)
+plan(multicore)
+
+# Use ANOVA-based tuning for faster hyperparameter search
+all_workflows <- top_workflows %>% 
+  workflow_map(
+    resamples = train_resamples, 
+    verbose = TRUE,
+    fn = "tune_race_anova"  # Faster than grid search
+  )
 ##################################
 #check models
 #######################
-all_workflows %>% 
-  autoplot(select_best = TRUE)
+all_workflows<-all_workflows %>%
+  filter(!map_lgl(result, inherits, "try-error")) 
+
 all_workflows %>% 
   rank_results()
 
-doParallel::registerDoParallel(cores = 7)
+plan(multicore)
 set.seed(247)
 
 acc_model_eval <- perf_mod(all_workflows, metric = "roc_auc", iter = 5000)
@@ -1021,11 +1074,131 @@ autoplot(acc_model_eval, type = "ROPE", size = 0.006) %>%
 ############################### 
 #finalize best model & plot
 ###########################
-rda_wflow_fit<-all_workflows %>% 
-  extract_workflow("Recipe2_Random_Forest") %>%
+# 📌 Step 1: Finalize the Best XGBoost Model
+xgb_wflow_fit <- all_workflows %>% 
+  extract_workflow("SVM Recipe_XGBoost (Boosted Trees)") %>% 
   finalize_workflow(
     all_workflows %>% 
-      extract_workflow_set_result("Recipe2_Random_Forest") %>% 
+      extract_workflow_set_result("SVM Recipe_XGBoost (Boosted Trees)") %>% 
+      select_best(metric = "roc_auc")
+  ) %>%
+  last_fit(split = travel_split, metrics = metric_set(roc_auc)) %>% 
+  extract_workflow() 
+
+# 📌 Step 2: Explain the Model Using DALEX
+xgb_explainer <- explain_tidymodels(
+  xgb_wflow_fit, 
+  data = test_data %>% select(-overall), 
+  y = as.numeric(test_data$overall) - 1,  # Convert factor to numeric (starting at 0)
+  label = "XGBoost",
+  verbose = FALSE
+)
+
+# 📌 Step 3: Compute Feature Importance
+vip_xgb <- xgb_explainer %>% model_parts()
+
+obj <- list(vip_xgb)
+metric_name <- attr(obj[[1]], "loss_name")
+
+# 📌 Keep All Permutation Results for Boxplots
+vip_xgb_cleaned <- vip_xgb %>%
+  as_tibble() %>%
+  filter(variable != "_baseline_", variable != "_full_model_") %>%
+  mutate(variable = fct_reorder(variable, dropout_loss))  # Reorder for visualization
+
+# 📌 Compute the Automatic Reference Dropout Loss
+full_mean_dropout_loss <- mean(vip_xgb_cleaned$dropout_loss)  # Dynamic computation
+
+# 📌 Get the Last Variable for Proper Text Placement (Fix `max(variable)` issue)
+last_var <- levels(vip_xgb_cleaned$variable)[length(levels(vip_xgb_cleaned$variable))]
+
+# 📌 Generate Feature Importance Plot
+ggplot(vip_xgb_cleaned, aes(dropout_loss, variable)) +
+  geom_vline(aes(xintercept = 0.3190860),
+             linewidth = 1, lty = 2, alpha = 0.7, color = "red") +  # Now automatic!
+  geom_text(aes(x = full_mean_dropout_loss + 0.1, y = last_var,  # Use `last_var` instead of `max(variable)`
+                label = "Full Model Cross Entropy"), 
+            vjust = 1.5, hjust = 0, angle = 0, size = 4) +  # Adjust text position
+  geom_boxplot(fill = "#91CBD765", alpha = 0.4) +  # Boxplots will now display variability
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 11)) +
+  labs(x = "Dropout Loss after Permutations\n(Higher Indicates More Important)", 
+       y = NULL, fill = NULL, color = NULL, 
+       title = "XGBoost Model Feature Importance",
+       subtitle = "Using Permutation-Based Feature Importance (DALEX)")
+
+
+
+
+
+
+
+
+
+
+# 📌 Step 4: Prepare Data for Visualization
+vip_xgb_cleaned <- vip_xgb %>%
+  as_tibble() %>%
+  filter(variable != "_baseline_", variable != "_full_model_") %>%
+  mutate(variable = fct_reorder(variable, dropout_loss)) %>%
+  group_by(variable) %>%
+  summarise(dropout_loss = mean(dropout_loss))
+
+# 📌 Step 6: Define Full Model Dropout Loss for Reference Line
+full_mean_dropout_loss <- mean(vip_xgb_cleaned$dropout_loss)
+
+# 📌 Step 7: Plot Feature Importance
+ggplot(vip_xgb_cleaned, aes(x = dropout_loss, y = variable)) +
+  geom_vline(aes(xintercept = full_mean_dropout_loss), 
+             linewidth = 1, lty = 2, alpha = 0.7) +
+  geom_text(aes(x = full_mean_dropout_loss - 4, y = Inf, 
+                label = "Full Model Cross Entropy"), 
+            vjust = 1.5, hjust = 1.3, angle = 90) +
+  geom_boxplot(fill = "#91CBD765", alpha = 0.4) +
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 11)) +
+  labs(x = "Dropout Loss after Permutations\n(Higher Indicates More Important)", 
+       y = NULL,  
+       title = "XGBoost Model Feature Importance",
+       subtitle = "Using Permutation-Based Feature Importance (DALEX)")
+
+
+
+# 📌 Ensure Feature Importance is Computed Correctly
+vip_xgb_cleaned <- vip_xgb %>%
+  as_tibble() %>%
+  filter(variable != "_baseline_", variable != "_full_model_") %>%
+  group_by(variable) %>%
+  summarise(dropout_loss = mean(abs(dropout_loss))) %>%  # Use absolute values for clarity
+  mutate(variable = fct_reorder(variable, dropout_loss))  # Reorder for plotting
+
+# 📌 Define Correct Reference Line
+full_mean_dropout_loss <- mean(vip_xgb_cleaned$dropout_loss)
+
+# 📌 Plot Feature Importance
+ggplot(vip_xgb_cleaned, aes(x = dropout_loss, y = variable)) +
+  geom_vline(aes(xintercept = 0.3190860), 
+             linewidth = 1, lty = 2, alpha = 0.7, color = "red") +  # Make reference line red for visibility
+  geom_text(aes(x = full_mean_dropout_loss + 0.1, y = max(variable), 
+                label = "Full Model Cross Entropy"), 
+            vjust = 1.5, hjust = 0, angle = 0, size = 4) +  # Adjust text position
+  geom_boxplot(fill = "#91CBD765", alpha = 0.4, outlier.shape = NA) +  # Ensure boxplot is readable
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.text.y = element_text(size = 11)) +
+  labs(x = "Dropout Loss after Permutations\n(Higher Indicates More Important)", 
+       y = NULL,  
+       title = "XGBoost Model Feature Importance",
+       subtitle = "Using Permutation-Based Feature Importance (DALEX)") 
+
+
+rda_wflow_fit<-all_workflows %>% 
+  extract_workflow("SVM Recipe_XGBoost (Boosted Trees)") %>%
+  finalize_workflow(
+    all_workflows %>% 
+      extract_workflow_set_result("SVM Recipe_XGBoost (Boosted Trees)") %>% 
       select_best(metric = "roc_auc")
   ) %>%
   last_fit(split = travel_split, metrics = metric_set(roc_auc)) %>% 
@@ -1035,8 +1208,8 @@ library(DALEX)
 library(DALEXtra)
 vip_beans <- explain_tidymodels(
   rda_wflow_fit, 
-  data =test_data %>% select(-impact), 
-  y = test_data$impact,
+  data =test_data %>% select(-overall), 
+  y = test_data$overall,
   label = "RDA",
   verbose = FALSE) %>% 
   model_parts() %>% 
